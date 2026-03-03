@@ -1,13 +1,1080 @@
-+-------------------+
-|     OpenCode      |
-+-------------------+
-| - packages        |
-| - infra           |
-| - sdks            |
-| - github          |
-| - nix             |
-| - specs           |
-+-------------------+
-| + init()          |
-| + run()           |
-+-------------------+
+================================================================================
+                    OPENCODE — DETAILED CLASS DIAGRAM (ASCII)
+================================================================================
+
+  This diagram documents the main abstractions, types, and relationships in the
+  opencode codebase (packages/opencode/src). OpenCode uses TypeScript namespaces
+  with Zod schemas as the primary pattern rather than traditional OOP classes.
+  Each "namespace" below acts as a module with its exported types (Info schemas),
+  events, error types, and key functions.
+
+  Legend:
+    ──────>   "depends on / uses"
+    ──|>      "extends / inherits"
+    ◇─────>   "aggregates / has-many"
+    ◆─────>   "composes / owns"
+    - - - ->  "emits event to / subscribes"
+
+================================================================================
+  1. TOP-LEVEL ARCHITECTURE
+================================================================================
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                            CLI (Entry Point)                           │
+  │  cli/cmd/*.ts                                                         │
+  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐  │
+  │  │ RunCommand   │ │ ChatCommand  │ │ DebugCommand │ │ ConfigCmd    │  │
+  │  └──────┬───────┘ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘  │
+  └─────────┼────────────────┼────────────────┼────────────────┼──────────┘
+            │                │                │                │
+            ▼                ▼                ▼                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                         Server (Hono HTTP/WS)                          │
+  │  server/server.ts                                                      │
+  │  ┌────────────┐ ┌──────────────┐ ┌─────────────┐ ┌──────────────────┐ │
+  │  │ SessionRte │ │ ProviderRte  │ │ ProjectRte  │ │ GlobalRte        │ │
+  │  │ McpRte     │ │ FileRte      │ │ PtyRte      │ │ TuiRte           │ │
+  │  └────────────┘ └──────────────┘ └─────────────┘ └──────────────────┘ │
+  │  + App()  : Hono          + listen(port, host)                         │
+  │  + url()  : URL           + openapi() : OpenAPI spec                   │
+  └────────────────────────────────┬────────────────────────────────────────┘
+                                   │  uses
+            ┌──────────┬───────────┼──────────┬──────────┬──────────┐
+            ▼          ▼           ▼          ▼          ▼          ▼
+       ┌────────┐ ┌─────────┐ ┌────────┐ ┌────────┐ ┌──────┐ ┌────────┐
+       │Session │ │Provider │ │ Agent  │ │Project │ │ MCP  │ │  File  │
+       └────────┘ └─────────┘ └────────┘ └────────┘ └──────┘ └────────┘
+
+================================================================================
+  2. CORE DOMAIN MODELS (Zod-validated Schemas)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Session                                  │
+  │  session/index.ts                                                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - id            : Identifier("session")                       │
+  │    - slug          : string                                      │
+  │    - projectID     : string                                      │
+  │    - directory     : string                                      │
+  │    - parentID?     : Identifier("session")                       │
+  │    - title         : string                                      │
+  │    - version       : string                                      │
+  │    - share?        : { url: string }                             │
+  │    - summary?      : { additions, deletions, files, diffs? }     │
+  │    - permission?   : PermissionNext.Ruleset                      │
+  │    - revert?       : { messageID, partID?, snapshot?, diff? }    │
+  │    - time          : { created, updated, compacting?, archived?} │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» ShareInfo                                              │
+  │    - secret        : string                                      │
+  │    - url           : string                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «events»                                                        │
+  │    - Created  (session.created)                                  │
+  │    - Updated  (session.updated)                                  │
+  │    - Deleted  (session.deleted)                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + create(input)    : Info                                       │
+  │  + get(sessionID)   : Info                                       │
+  │  + list(opts?)      : Info[]                                     │
+  │  + remove(id)       : void                                       │
+  │  + put(info)        : void                                       │
+  │  + messages(opts)   : MessageV2.Info[]                           │
+  └──────────────────────┬───────────┬──────────────────────────────┘
+                         │           │
+            ◆────────────┘           │ references
+            ▼                        ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                       MessageV2                                  │
+  │  session/message-v2.ts                                           │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info = User | Assistant  (discriminated on "role")     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» User                                                   │
+  │    - id            : Identifier("message")                       │
+  │    - role          : "user"                                      │
+  │    - sessionID     : string                                      │
+  │    - time          : { created, updated }                        │
+  │    - parts         : Part[]                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Assistant                                              │
+  │    - id            : Identifier("message")                       │
+  │    - role          : "assistant"                                  │
+  │    - sessionID     : string                                      │
+  │    - parentID      : string                                      │
+  │    - modelID       : string                                      │
+  │    - providerID    : string                                      │
+  │    - agent         : string                                      │
+  │    - path          : { cwd, root }                               │
+  │    - cost          : number                                      │
+  │    - tokens        : { input, output, reasoning, cache }         │
+  │    - parts         : Part[]                                      │
+  │    - time          : { created, updated }                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «Part Types» (discriminated on "type")                          │
+  │    - TextPart          { type: "text", content }                 │
+  │    - ToolPart          { type: "tool", tool, state, ... }        │
+  │    - ToolResultPart    { type: "tool-result", ... }              │
+  │    - FilePart          { type: "file", ... }                     │
+  │    - SnapshotPart      { type: "snapshot", ... }                 │
+  │    - StepStartPart     { type: "step-start", ... }               │
+  │    - AgentPart         { type: "agent", ... }                    │
+  │    - CompactionPart    { type: "compaction", auto }              │
+  │    - SubtaskPart       { type: "subtask", prompt, agent, ... }   │
+  │    - RetryPart         { type: "retry", attempt }                │
+  │    - TodoPart          { type: "todo", ... }                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «errors»                                                        │
+  │    - OutputLengthError                                           │
+  │    - AbortedError                                                │
+  │    - AuthError                                                   │
+  │    - APIError                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «events»                                                        │
+  │    - Updated  (message.updated)                                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                     SessionStatus                                │
+  │  session/status.ts                                               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info = "idle" | "retry" | "busy"                      │
+  │    idle  : { type: "idle" }                                      │
+  │    retry : { type: "retry", attempt, message, next }             │
+  │    busy  : { type: "busy" }                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «events»                                                        │
+  │    - Status (session.status)                                     │
+  │    - Idle   (session.idle)  [deprecated]                         │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + get(sessionID)   : Info                                       │
+  │  + set(sessionID, status) : void                                 │
+  │  + list()           : Record<string, Info>                       │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Session Sub-Modules (session/*.ts)                              │
+  │  ┌──────────────────┐  ┌──────────────────┐                     │
+  │  │ SessionPrompt    │  │ SessionCompaction │                     │
+  │  │  + build(...)    │  │  + compact(...)   │                     │
+  │  └──────────────────┘  └──────────────────┘                     │
+  │  ┌──────────────────┐  ┌──────────────────┐                     │
+  │  │ SessionRevert    │  │ SessionSummary   │                     │
+  │  │  + revert(...)   │  │  + summarize(..) │                     │
+  │  │  + cleanup(...)  │  └──────────────────┘                     │
+  │  └──────────────────┘                                            │
+  │  ┌──────────────────┐                                            │
+  │  │ Todo             │                                            │
+  │  │  + list(session) │                                            │
+  │  └──────────────────┘                                            │
+  └──────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  3. AGENT & PROVIDER
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Agent                                   │
+  │  agent/agent.ts                                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - name          : string                                      │
+  │    - description?  : string                                      │
+  │    - mode          : "subagent" | "primary" | "all"              │
+  │    - native?       : boolean                                     │
+  │    - hidden?       : boolean                                     │
+  │    - topP?         : number                                      │
+  │    - temperature?  : number                                      │
+  │    - color?        : string                                      │
+  │    - permission    : PermissionNext.Ruleset                      │
+  │    - model?        : { providerID, modelID }                     │
+  │    - prompt?       : string                                      │
+  │    - options       : Record<string, any>                         │
+  │    - steps?        : number                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Built-in Agents: build, plan, general, explore, title,          │
+  │                   summary, compaction, test, refactor, ...       │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + list()          : Record<string, Info>                        │
+  │  + get(name)       : Info                                        │
+  │  + defaultAgent()  : Info                                        │
+  │  + prompt(agent, ctx) : string[]  (system prompts)               │
+  └──────────────────────────┬───────────────────────────────────────┘
+                             │ references model from
+                             ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Provider                                 │
+  │  provider/provider.ts                                            │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - id            : string                                      │
+  │    - name          : string                                      │
+  │    - source        : "env" | "config" | "custom" | "api"         │
+  │    - env           : string[]                                    │
+  │    - key?          : string                                      │
+  │    - options       : Record<string, any>                         │
+  │    - models        : Record<string, Model>                       │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Model                                                  │
+  │    - id            : string                                      │
+  │    - providerID    : string                                      │
+  │    - api           : { id, url, npm }                            │
+  │    - name          : string                                      │
+  │    - family?       : string                                      │
+  │    - capabilities  : { temperature, reasoning, attachment,       │
+  │    │                   toolcall, input:{...}, output:{...} }     │
+  │    - limit         : { context, output }                         │
+  │    - cost          : { input, output, cache_read, cache_write }  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «errors»                                                        │
+  │    - ModelNotFoundError                                          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Bundled: anthropic, openai, google, azure, mistral, groq,      │
+  │           xai, deepseek, openrouter, github-copilot, opencode,  │
+  │           cerebras, sambanova, together, fireworks, ...          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + list()            : Record<string, Info>                      │
+  │  + getProvider(id)   : Info                                      │
+  │  + getModel(prov,m)  : Model                                    │
+  │  + parseModel(str)   : { providerID, modelID }                  │
+  │  + closest(prov, q)  : { providerID, modelID }                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+         Agent ────> Provider.Model  (agent binds to a model)
+         Agent ────> PermissionNext.Ruleset  (agent defines permissions)
+         Agent ────> Config  (reads agent configuration)
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                      ProviderTransform                           │
+  │  provider/transform.ts                                           │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + transform(model, messages) : transformed messages             │
+  │  + providerOptions(model, opts) : vendor-specific options        │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        ModelsDev                                 │
+  │  provider/models.ts                                              │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Provider, Model (raw model database from models.dev)   │
+  │  + get()     : Record<string, Provider>                          │
+  │  + refresh() : void                                              │
+  └──────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  4. TOOL SYSTEM
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           Tool                                   │
+  │  tool/tool.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» Info<Parameters, Metadata>                          │
+  │    - id            : string                                      │
+  │    - init(ctx?)    : Promise<{                                   │
+  │    │     description : string                                    │
+  │    │     parameters  : Zod schema                                │
+  │    │     execute(args, ctx) : Promise<{                          │
+  │    │         title, metadata, output, attachments? }>            │
+  │    │     formatValidationError?(error) : string                  │
+  │    │  }>                                                         │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» Context                                             │
+  │    - sessionID     : string                                      │
+  │    - messageID     : string                                      │
+  │    - agent?        : Agent.Info                                  │
+  │    - abort         : AbortSignal                                 │
+  │    - ask(opts)     : Permission check                            │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» InitContext                                         │
+  │    - agent?        : Agent.Info                                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                       ToolRegistry                               │
+  │  tool/registry.ts                                                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Built-in Tools:                                                 │
+  │    bash, read, write, edit, grep, glob, lsp, websearch,          │
+  │    todoread, todowrite, fetch, patch, ...                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + list(agent?)    : Tool.Info[]                                 │
+  │  + get(id)         : Tool.Info                                   │
+  └──────────────────┬───────────────────────────────────────────────┘
+                     │ registers
+                     ▼
+           ┌────────────────────┐
+           │ Tool.Info (each)   │
+           │  bash, read, write │
+           │  edit, grep, glob  │
+           │  lsp, websearch... │
+           └────────────────────┘
+
+  Tool ──────> Agent.Info   (tool execution context includes agent)
+  Tool ──────> Permission   (tools request permission via ctx.ask())
+  Tool ──────> MessageV2    (tools produce FilePart attachments)
+
+================================================================================
+  5. MCP (Model Context Protocol)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                            MCP                                   │
+  │  mcp/index.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Resource                                               │
+  │    - uri           : string                                      │
+  │    - name          : string                                      │
+  │    - description?  : string                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Status                                                 │
+  │    - id            : string                                      │
+  │    - name          : string                                      │
+  │    - status        : "connected" | "disabled" | "error"          │
+  │    - tools         : ToolInfo[]                                  │
+  │    - error?        : string                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «events»                                                        │
+  │    - ToolsChanged (mcp.tools.changed)                            │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Transports: HTTP, SSE, Stdio, WebSocket                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + list()          : Status[]                                    │
+  │  + connect(id)     : void                                        │
+  │  + disconnect(id)  : void                                        │
+  │  + tools()         : bridged Tool.Info[]                         │
+  └──────────────────────────────────────────────────────────────────┘
+
+  MCP ──────> Config   (reads MCP server configuration)
+  MCP ──────> Bus      (emits ToolsChanged events)
+  MCP ◇─────> Tool     (bridges remote tools into Tool system)
+
+================================================================================
+  6. ACP (Agent Client Protocol)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                            ACP                                   │
+  │  acp/agent.ts, acp/session.ts, acp/types.ts                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» ACPSessionState                                     │
+  │    - id            : string                                      │
+  │    - cwd           : string                                      │
+  │    - mcpServers    : McpServer[]                                 │
+  │    - createdAt     : Date                                        │
+  │    - model?        : { providerID, modelID }                     │
+  │    - modeId?       : string                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» ACPConfig                                           │
+  │    - sdk           : OpencodeClient                              │
+  │    - defaultModel? : { providerID, modelID }                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «class» Agent implements ACPAgent                               │
+  │    + initialize(params) : InitializeResponse                     │
+  │    + session management (create, list, resume, fork)             │
+  │    + message handling (send, stream, subscribe)                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ACP.Agent ──────> Session    (manages sessions via SDK)
+  ACP.Agent ──────> MCP        (binds MCP servers)
+  ACP.Agent ──────> Provider   (resolves models)
+
+================================================================================
+  7. CONFIGURATION
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Config                                  │
+  │  config/config.ts                                                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info (comprehensive configuration)                     │
+  │    - model?           : string  (provider/model format)          │
+  │    - small_model?     : string                                   │
+  │    - default_agent?   : string                                   │
+  │    - username?        : string                                   │
+  │    - agent?           : Record<string, Agent>                    │
+  │    - provider?        : Record<string, Provider>                 │
+  │    - mcp?             : Record<string, Mcp>                      │
+  │    - command?         : Record<string, Command>                  │
+  │    - instructions?    : string[]                                 │
+  │    - keybinds?        : Keybinds                                 │
+  │    - theme?           : string                                   │
+  │    - disabled_providers? : string[]                              │
+  │    - experimental?    : Experimental                             │
+  │    - formatter?       : Record<string, FormatterCfg>             │
+  │    - lsp?             : Record<string, LspCfg>                   │
+  │    - permission?      : PermissionNext.Ruleset                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Sub-schemas:                                                    │
+  │    Config.Agent, Config.Provider, Config.Mcp,                    │
+  │    Config.Command, Config.Keybinds, Config.Experimental          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Sources (merged in order):                                      │
+  │    1. Remote well-known config                                   │
+  │    2. Global config (~/.config/opencode/config.jsonc)             │
+  │    3. Project config (opencode.json / .opencode/config.jsonc)    │
+  │    4. Custom path (OPENCODE_CONFIG env)                          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + get()           : Info                                        │
+  │  + reload()        : Info                                        │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Config ──────> Auth      (provider authentication)
+  Config ──────> Flag      (environment-based feature flags)
+  Config ──────> Instance  (scoped to current instance)
+
+================================================================================
+  8. PROJECT & INSTANCE
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Instance                                 │
+  │  project/instance.ts                                             │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Properties:                                                     │
+  │    - directory      : string  (current working directory)        │
+  │    - project        : { id, worktree, name }                     │
+  │    - worktree       : { name, branch, directory }                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + state<S>(init, dispose?)  : () => S  (scoped state factory)   │
+  │  + dispose()                 : void                              │
+  │  + disposeAll()              : void                              │
+  └──────────────────────┬───────────────────────────────────────────┘
+                         │ owns / scopes
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Project                                  │
+  │  project/project.ts                                              │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - id             : string  (from git root commit hash)        │
+  │    - worktree       : { name, branch, directory }                │
+  │    - vcs            : "git" | "none"                             │
+  │    - name           : string                                     │
+  │    - commands        : { cmd: template }                         │
+  │    - sandboxes?      : Sandbox[]                                 │
+  │    - time           : { created, updated }                       │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «events»                                                        │
+  │    - Updated (project.updated)                                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + list()          : Info[]                                      │
+  │  + get(id)         : Info                                        │
+  │  + current()       : Info                                        │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         State                                    │
+  │  project/state.ts                                                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «internal» Entry { state, dispose? }                            │
+  │  - recordsByKey : Map<string, Map<any, Entry>>                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + create<S>(root, init, dispose?)  : () => S                    │
+  │  + dispose(key)                     : void                       │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Instance ──state()──> State  (creates instance-scoped state)
+  Instance ◆─────────> Project (owns current project reference)
+  Project  ──────────> Storage (persists project data)
+
+================================================================================
+  9. PERMISSION SYSTEM
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        Permission                                │
+  │  permission/index.ts                                             │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - id            : Identifier("permission")                    │
+  │    - sessionID     : string                                      │
+  │    - messageID     : string                                      │
+  │    - callID?       : string                                      │
+  │    - message       : string                                      │
+  │    - pattern?      : string                                      │
+  │    - metadata      : various per type                            │
+  │    - type          : "read" | "write" | "bash" | "mcp" |        │
+  │    │                 "webfetch" | "external_directory" | ...     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Response = "once" | "always" | "reject"               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «error» RejectedError                                          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + request(opts)   : Permission.Info                             │
+  │  + respond(opts)   : void                                        │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                      PermissionNext                              │
+  │  permission/next.ts                                              │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Ruleset (hierarchical rules)                           │
+  │    - edit          : "ask" | "allow" | "deny"                    │
+  │    - bash          : rule | Record<pattern, rule>                │
+  │    - webfetch      : rule                                        │
+  │    - mcp           : rule | Record<server, rule>                 │
+  │    - external_directory : rule | Record<pattern, rule>           │
+  │    - doom_loop     : rule                                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + evaluate(ruleset, type, pattern) : "ask"|"allow"|"deny"      │
+  │  + fromConfig(cfg) : Ruleset                                     │
+  │  + merge(a, b)     : Ruleset                                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Permission ──────> Bus        (emits permission request events)
+  Permission ──────> Instance   (scoped per instance)
+  Agent ◆──────────> PermissionNext.Ruleset (each agent has rules)
+
+================================================================================
+  10. EVENT BUS
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         BusEvent                                 │
+  │  bus/bus-event.ts                                                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «type» Definition = { type: string, properties: ZodSchema }    │
+  │  + define<T,P>(type, properties) : Definition                    │
+  │  + payloads() : discriminated union of all events                │
+  └──────────────────────────────┬───────────────────────────────────┘
+                                 │
+                                 ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           Bus                                    │
+  │  bus/index.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Instance-scoped pub/sub system                                  │
+  │  - subscriptions : Map<type, Subscription[]>                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + publish(def, properties) : void                               │
+  │  + subscribe(def, callback) : unsubscribe fn                     │
+  │  + once(def, callback)      : void                               │
+  │  + subscribeAll(callback)   : unsubscribe fn                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        GlobalBus                                 │
+  │  bus/global.ts                                                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Node EventEmitter for cross-instance events                     │
+  │  + emit("event", { directory?, payload })                        │
+  │  + on("event", handler)                                          │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Bus ─ ─ ─ ─> GlobalBus   (all Bus.publish also emits to GlobalBus)
+  Bus ──────> Instance      (scoped per instance)
+
+  Registered Event Types:
+    session.created, session.updated, session.deleted
+    session.status, session.idle
+    message.updated
+    project.updated
+    command.executed
+    permission.requested
+    mcp.tools.changed
+    server.connected, server.instance.disposed, global.disposed
+
+================================================================================
+  11. STORAGE & PERSISTENCE
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Storage                                  │
+  │  storage/storage.ts                                              │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  File-based data persistence                                     │
+  │  Root: ~/.local/share/opencode/                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «error» NotFoundError                                           │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + dir(projectID)    : path to project storage                   │
+  │  + read(path)        : data                                      │
+  │  + write(path, data) : void  (atomic writes)                     │
+  │  + migrate(...)      : void  (schema migration)                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Global                                  │
+  │  global/index.ts                                                 │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  XDG-compliant path management                                   │
+  │  + .data    : ~/.local/share/opencode                            │
+  │  + .config  : ~/.config/opencode                                 │
+  │  + .cache   : ~/.cache/opencode/v{N}                             │
+  │  + .bin     : ~/.local/share/opencode/bin                        │
+  │  + .log     : ~/.local/share/opencode/log                        │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Storage ──────> Global     (uses Global paths)
+  Storage ──────> Lock       (file-based locking for concurrency)
+
+================================================================================
+  12. SNAPSHOT & VERSION CONTROL
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Snapshot                                 │
+  │  snapshot/index.ts                                               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Patch       { file diffs }                             │
+  │  «schema» FileDiff    { path, status, additions, deletions }     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Git-based workspace snapshots                                   │
+  │  Location: ~/.opencode/snapshot/*                                │
+  │  Retention: 7 days (auto-pruned by Scheduler)                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + create(sessionID)  : snapshot hash                            │
+  │  + diff(a, b)         : Patch                                    │
+  │  + cleanup()          : void                                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Snapshot ──────> Scheduler  (periodic cleanup)
+  Snapshot ──────> Config     (snapshot settings)
+  Session  ◇─────> Snapshot   (sessions reference snapshots)
+
+================================================================================
+  13. WORKTREE
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        Worktree                                  │
+  │  worktree/index.ts                                               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - name           : string                                     │
+  │    - branch         : string                                     │
+  │    - directory      : string                                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «errors»                                                        │
+  │    - NotGitError                                                 │
+  │    - NameGenerationFailedError                                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + create(input)    : Info                                       │
+  │  + remove(input)    : void                                       │
+  │  + reset(input)     : void                                       │
+  │  + list()           : Info[]                                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Worktree ──────> Project    (worktrees belong to a project)
+  Worktree ──────> Config     (worktree settings)
+
+================================================================================
+  14. FILE, FORMAT & PATCH
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           File                                   │
+  │  file/index.ts, file/ripgrep.ts, file/watcher.ts, file/ignore.ts│
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info    { path, added, removed, status }               │
+  │  «schema» Node    { name, children? }  (file tree)              │
+  │  «schema» Content { content, encoding }                          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + read(path)      : Content                                     │
+  │  + write(path, c)  : void                                        │
+  │  + tree(dir)       : Node                                        │
+  │  + search(query)   : SearchResult[] (via Ripgrep)                │
+  │  + watch(dir)      : Watcher                                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Format                                  │
+  │  format/index.ts, format/formatter.ts                            │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Status { name, extensions, enabled }                   │
+  │  Formatters: Prettier, Black, Rustfmt, gofmt, clang-format, ... │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + format(file)    : formatted content                           │
+  │  + list()          : Status[]                                    │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Patch                                   │
+  │  patch/index.ts                                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Hunk  { add, delete, update }                          │
+  │  «schema» ApplyPatchAction                                       │
+  │  «schema» AffectedPaths                                          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + parse(text)     : Patch                                       │
+  │  + apply(patch)    : void                                        │
+  │  + affected(patch) : AffectedPaths                               │
+  └──────────────────────────────────────────────────────────────────┘
+
+  File ──────> Instance    (scoped to instance directory)
+  Format ────> Config      (formatter configuration)
+  Patch  ────> File        (applies patches to files)
+
+================================================================================
+  15. COMMAND & SKILL
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Command                                  │
+  │  command/index.ts                                                │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - name           : string                                     │
+  │    - description?   : string                                     │
+  │    - agent?         : string                                     │
+  │    - model?         : string                                     │
+  │    - mcp?           : boolean                                    │
+  │    - template       : string | Promise<string>                   │
+  │    - subtask?       : boolean                                    │
+  │    - hints          : string[]                                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «events»                                                        │
+  │    - Executed (command.executed)                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Built-in: /init, /review, + custom from config                  │
+  │  + list()          : Info[]                                      │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Skill                                   │
+  │  skill/skill.ts                                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - name           : string                                     │
+  │    - description    : string                                     │
+  │    - location       : string (glob-discovered SKILL.md)          │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + list()           : Info[]                                     │
+  │  + discover(dir)    : Info[]                                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Command ──────> Config     (custom commands from config)
+  Command ──────> MCP        (MCP-backed commands)
+  Skill   ──────> Config     (skill discovery paths)
+
+================================================================================
+  16. LSP (Language Server Protocol)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           LSP                                    │
+  │  lsp/index.ts, lsp/client.ts, lsp/server.ts                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Symbol          { name, kind, location }               │
+  │  «schema» DocumentSymbol  { name, kind, range, children }        │
+  │  «schema» Range           { start, end }                         │
+  │  «schema» LanguageConfig  { cmd, args, extensions }              │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» LspStatus       { id, name, root, status }            │
+  │  status: "connected" | "error"                                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + symbols(file)     : DocumentSymbol[]                          │
+  │  + definition(file, pos) : Location                              │
+  │  + list()            : LspStatus[]                               │
+  └──────────────────────────────────────────────────────────────────┘
+
+  LSP ──────> Config     (LSP server configuration)
+  LSP ──────> Instance   (scoped per instance)
+  LSP ──────> Bus        (lifecycle events)
+
+================================================================================
+  17. AUTH
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           Auth                                   │
+  │  auth/index.ts                                                   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Oauth    { type: "oauth", refresh, access, expires }   │
+  │  «schema» Api      { type: "api", key }                          │
+  │  «schema» WellKnown { type: "well-known", ... }                 │
+  │  «schema» Info = Oauth | Api | WellKnown  (discriminated)       │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + get(providerID) : Info | undefined                            │
+  │  + set(providerID, info) : void                                  │
+  │  + remove(providerID) : void                                     │
+  │  + list() : Record<string, Info>                                 │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Auth ──────> Global     (stores at ~/.config/opencode/auth.json)
+  Provider ──> Auth       (reads credentials)
+
+================================================================================
+  18. PLUGIN SYSTEM
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Plugin                                  │
+  │  plugin/index.ts, plugin/codex.ts, plugin/copilot.ts             │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» PluginInstance                                      │
+  │    - name           : string                                     │
+  │    - hooks          : Hooks                                      │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» PluginInput                                         │
+  │    - client         : OpencodeClient                             │
+  │    - project        : ProjectRef                                 │
+  │    - worktree       : WorktreeRef                                │
+  │    - directory      : string                                     │
+  │    - serverUrl      : URL                                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Built-in: CodexAuthPlugin, CopilotAuthPlugin                    │
+  │  External: opencode-anthropic-auth, @gitlab/opencode-gitlab-auth │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + init()          : void                                        │
+  │  + hooks()         : Hooks[]                                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Plugin ──────> Config     (plugin configuration)
+  Plugin ──────> Bus        (subscribes to all events)
+  Plugin ──────> Server     (uses SDK client internally)
+
+================================================================================
+  19. PTY, SHELL, QUESTION
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           Pty                                    │
+  │  pty/index.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info                                                   │
+  │    - id             : Identifier("pty")                          │
+  │    - title          : string                                     │
+  │    - command        : string                                     │
+  │    - pid            : number                                     │
+  │    - status         : "running" | "exited"                       │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + create(input)    : Info                                       │
+  │  + write(id, data)  : void                                       │
+  │  + resize(id, cols, rows) : void                                 │
+  │  + kill(id)         : void                                       │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Shell                                   │
+  │  shell/shell.ts                                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + preferredShell() : string  (zsh/bash/sh/cmd)                  │
+  │  + kill(pid)        : void  (process tree)                       │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                         Question                                 │
+  │  question/index.ts                                               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info     { id, text, options[], custom? }              │
+  │  «schema» Request  { questions: Info[] }                         │
+  │  «schema» Reply    { answers: Record<id, string> }               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + ask(request)     : Reply                                      │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Pty ──────> Shell       (uses preferred shell)
+  Pty ──────> Bus         (lifecycle events)
+  Question ─> Bus         (emits question events for UI)
+
+================================================================================
+  20. SUPPORTING MODULES
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        Scheduler                                 │
+  │  scheduler/index.ts                                              │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «interface» Task { interval, run }                              │
+  │  + register(task)  : void                                        │
+  │  + global(task)    : void  (not instance-scoped)                 │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        Identifier                                │
+  │  id/id.ts                                                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Prefixes: ses, msg, per, que, usr, prt, pty, tool               │
+  │  + ascending(prefix)  : string (26-char base62 ID)               │
+  │  + descending(prefix) : string                                   │
+  │  + timestamp(id)      : Date                                     │
+  │  + schema(prefix)     : Zod schema                               │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           Flag                                   │
+  │  flag/flag.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Environment-based feature flags (~50 flags)                     │
+  │  Key flags:                                                      │
+  │    OPENCODE_EXPERIMENTAL, OPENCODE_DISABLE_*,                    │
+  │    OPENCODE_CLIENT, OPENCODE_DEV, ...                            │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                      Installation                                │
+  │  installation/index.ts                                           │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «schema» Info { version, latest, method, channel }              │
+  │  + VERSION       : string                                        │
+  │  + isUpdateAvail(): boolean                                      │
+  │  + method()      : "npm"|"yarn"|"bun"|"curl"|...                 │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Share                                   │
+  │  share/share.ts                                                  │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  + share(sessionID) : URL                                        │
+  │  + sync(sessionID)  : void                                       │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           IDE                                    │
+  │  ide/index.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  «errors» AlreadyInstalledError, InstallFailedError              │
+  │  + detect()      : IDE type (VSCode, Cursor, Windsurf, ...)      │
+  │  + install()     : void  (extension install)                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                           Env                                    │
+  │  env/index.ts                                                    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Instance-scoped process.env wrapper                             │
+  │  + get(key)    : string | undefined                              │
+  │  + set(key, v) : void                                            │
+  │  + all()       : Record<string, string>                          │
+  └──────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                       Util (Shared)                              │
+  │  util/*.ts                                                       │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Log        : structured logging (file + console)                │
+  │  Filesystem : walk, up, mkdir, atomic writes                     │
+  │  lazy       : lazy initialization pattern                        │
+  │  Lock       : file-based concurrency locks                       │
+  │  queue      : work queue for async tasks                         │
+  │  defer      : deferred promise pattern                           │
+  │  token      : token counting for LLM context                    │
+  │  context    : thread-local context (AsyncLocalStorage)           │
+  │  wildcard   : glob pattern matching                              │
+  │  color      : terminal color utilities                           │
+  │  locale     : system locale detection                            │
+  │  keybind    : keybinding string parsing                          │
+  └──────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  21. FULL DEPENDENCY GRAPH (Summarized)
+================================================================================
+
+                              ┌─────────┐
+                              │   CLI   │
+                              └────┬────┘
+                                   │
+                      ┌────────────┼─────────────┐
+                      ▼            ▼             ▼
+                ┌──────────┐ ┌──────────┐ ┌──────────┐
+                │  Server  │ │  Plugin  │ │   ACP    │
+                └────┬─────┘ └────┬─────┘ └────┬─────┘
+                     │            │            │
+         ┌───────┬───┴────┬───────┴────┬───────┘
+         ▼       ▼        ▼            ▼
+    ┌─────────┐┌───────┐┌────────┐┌─────────┐
+    │ Session ││ Agent ││  MCP   ││Provider │
+    └────┬────┘└───┬───┘└───┬────┘└────┬────┘
+         │         │        │          │
+         │    ┌────┴────┐   │     ┌────┴────┐
+         │    ▼         │   │     ▼         │
+         │ ┌──────┐     │   │ ┌────────┐   │
+         │ │ Tool │     │   │ │  Auth  │   │
+         │ └──┬───┘     │   │ └────────┘   │
+         │    │         │   │              │
+    ┌────┴────┴─────────┴───┴──────────────┴─────┐
+    ▼                                             ▼
+  ┌────────────────────┐          ┌───────────────────────┐
+  │   Permission       │          │     Config             │
+  │   PermissionNext   │          │  (multi-layer merge)   │
+  └────────┬───────────┘          └───────────┬───────────┘
+           │                                  │
+    ┌──────┴──────────────────────────────────┤
+    ▼                                         ▼
+  ┌────────────┐  ┌──────────┐  ┌──────────┐ ┌────────────┐
+  │    Bus     │  │ Command  │  │  Skill   │ │   Flag     │
+  │ (pub/sub)  │  └──────────┘  └──────────┘ └────────────┘
+  └──────┬─────┘
+         │
+  ┌──────┴──────────────────────────────────────────────────┐
+  ▼         ▼           ▼            ▼           ▼          ▼
+┌────────┐┌──────────┐┌──────────┐┌────────┐┌────────┐┌─────────┐
+│Instance││ Project  ││ Storage  ││Snapshot││Worktree││ Global  │
+└────────┘└──────────┘└──────────┘└────────┘└────────┘└─────────┘
+     │          │           │          │         │         │
+     └──────────┴───────────┴──────────┴─────────┴─────────┘
+                             │
+                    ┌────────┴────────┐
+                    ▼                 ▼
+              ┌──────────┐     ┌───────────┐
+              │   File   │     │   Patch   │
+              └──────────┘     └───────────┘
+                    │
+              ┌─────┴─────┐
+              ▼           ▼
+         ┌────────┐ ┌──────────┐
+         │ Format │ │   LSP    │
+         └────────┘ └──────────┘
+
+  Other modules (attach to Instance or Bus):
+    Pty ──> Shell, Bus
+    Question ──> Bus
+    Share ──> Bus, Session
+    IDE ──> Bus
+    Scheduler ──> Instance
+    Env ──> Instance
+    Identifier (standalone)
+    Installation (standalone)
+    Flag (standalone)
+
+================================================================================
+  22. DESIGN PATTERNS & ARCHITECTURAL NOTES
+================================================================================
+
+  1. NAMESPACE PATTERN
+     All modules use TypeScript `namespace` with Zod schemas instead of
+     traditional classes. Each namespace exports:
+       - Info schema (Zod-validated data shape)
+       - Event definitions (BusEvent.define)
+       - Error types (NamedError.create)
+       - Functions (CRUD operations, business logic)
+
+  2. INSTANCE-SCOPED STATE
+     Instance.state<S>(init, dispose?) creates per-directory singleton
+     state with automatic lifecycle management. Used by: Session, Agent,
+     Provider, Tool, MCP, Bus, Permission, Config, Plugin, LSP, etc.
+
+  3. EVENT-DRIVEN ARCHITECTURE
+     Bus (instance-scoped) + GlobalBus (cross-instance) provide type-safe
+     pub/sub. Events are defined with Zod schemas for validation.
+     Server streams events to clients via SSE.
+
+  4. LAYERED CONFIGURATION
+     Config merges from: remote well-known → global → project → custom.
+     Deep merge for objects, concatenation for arrays.
+
+  5. PERMISSION MODEL
+     Hierarchical permission rules with wildcard pattern matching.
+     Evaluated per agent (Ruleset) with ask/allow/deny responses.
+     Supports session-scoped approval caching.
+
+  6. PROVIDER ABSTRACTION
+     Unified provider interface via @ai-sdk packages.
+     Models loaded from models.dev database, merged with config overrides.
+     Supports bundled + custom + dynamic providers.
+
+  7. TOOL FRAMEWORK
+     Generic Tool.Info interface with init → execute lifecycle.
+     Tools request permissions via ctx.ask(). Built-in tools + MCP-bridged
+     external tools. Registry pattern for tool discovery.
+
+  8. FILE-BASED PERSISTENCE
+     Storage uses atomic file writes with Lock-based concurrency.
+     XDG basedir-compliant paths via Global module.
+     Schema migration support for data evolution.
+
+================================================================================
