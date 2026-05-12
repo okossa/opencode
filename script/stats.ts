@@ -201,16 +201,6 @@ console.log(`Fetched npm all-time downloads: ${npmDownloads.toLocaleString()}\n`
 
 await save(githubTotal, npmDownloads)
 
-await sendToPostHog("download", {
-  count: githubTotal,
-  source: "github",
-})
-
-await sendToPostHog("download", {
-  count: npmDownloads,
-  source: "npm",
-})
-
 const totalDownloads = githubTotal + npmDownloads
 
 console.log("=".repeat(60))

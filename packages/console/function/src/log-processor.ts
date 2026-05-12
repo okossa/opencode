@@ -38,18 +38,6 @@ export default {
         }
       }
       console.log(JSON.stringify(metrics, null, 2))
-
-      const ret = await fetch("https://api.honeycomb.io/1/events/zen", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Honeycomb-Event-Time": (event.eventTimestamp ?? Date.now()).toString(),
-          "X-Honeycomb-Team": Resource.HONEYCOMB_API_KEY.value,
-        },
-        body: JSON.stringify(metrics),
-      })
-      console.log(ret.status)
-      console.log(await ret.text())
     }
   },
 }
